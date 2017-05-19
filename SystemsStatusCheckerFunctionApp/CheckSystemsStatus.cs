@@ -1,45 +1,72 @@
-﻿using Capital.GSG.FX.Data.Core.SystemData;
-using Capital.GSG.FX.Monitoring.Server.Connector;
-using Capital.GSG.FX.Utils.Core;
-using log4net;
-using Net.Teirlinck.SlackPoster;
 using System;
+using Microsoft.Azure.WebJobs;
+using Microsoft.Azure.WebJobs.Host;
+using System.Threading.Tasks;
+using System.Threading;
+using Capital.GSG.FX.Monitoring.Server.Connector;
 using System.Collections.Generic;
-using System.Configuration;
+using Capital.GSG.FX.Data.Core.SystemData;
+using Capital.GSG.FX.Utils.Core;
+using Net.Teirlinck.SlackPoster;
 using System.Linq;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 
-namespace SystemsStatusCheckerConsoleApp.CheckSystemsStatus
+namespace SystemsStatusCheckerFunctionApp
 {
-    class Function
+    public static class CheckSystemsStatus
     {
-        private static ILog logger = LogManager.GetLogger(nameof(Function));
-
-        public static void Run()
+        [FunctionName("CheckSystemsStatus")]
+        public static void Run([TimerTrigger("0 */2 * * * *")]TimerInfo myTimer, TraceWriter log)
         {
-            logger.Info("Starting SystemsStatusChecker");
+            log.Info("Starting SystemsStatusChecker");
 
-            RunAsync().Wait();
+            RunAsync(log).Wait();
 
-            logger.Info("Exiting SystemsStatusChecker");
+            log.Info("Exiting SystemsStatusChecker");
         }
 
-        private static async Task RunAsync()
+        private static async Task RunAsync(TraceWriter logger)
         {
             string clientId = GetEnvironmentVariable("Monitoring:ClientId");
             string appKey = GetEnvironmentVariable("Monitoring:AppKey");
 
-            string backendAddress = GetEnvironmentVariable("Monitoring:BackendAddress");
-            string backendAppUri = GetEnvironmentVariable("Monitoring:BackendAppIdUri");
+            // 1. Dev
+            logger.Info("Checking DEV systems");
 
-            BackendSystemStatusesConnector connector = (new LightMonitoringServerConnector(clientId, appKey, backendAddress, backendAppUri)).SystemStatusesConnector;
+            string devBackendAddress = GetEnvironmentVariable("Monitoring:Dev:BackendAddress");
+            string devBackendAppUri = GetEnvironmentVariable("Monitoring:Dev:BackendAppIdUri");
 
+            BackendSystemStatusesConnector devConnector = (new LightMonitoringServerConnector(clientId, appKey, devBackendAddress, devBackendAppUri)).SystemStatusesConnector;
+
+            await DoCheckAsync(logger, devConnector);
+
+            // 2. QA
+            logger.Info("Checking QA systems");
+
+            string qaBackendAddress = GetEnvironmentVariable("Monitoring:QA:BackendAddress");
+            string qaBackendAppUri = GetEnvironmentVariable("Monitoring:QA:BackendAppIdUri");
+
+            BackendSystemStatusesConnector qaConnector = (new LightMonitoringServerConnector(clientId, appKey, qaBackendAddress, qaBackendAppUri)).SystemStatusesConnector;
+
+            await DoCheckAsync(logger, devConnector);
+
+            // 3. Prod
+            logger.Info("Checking PROD systems");
+
+            string prodBackendAddress = GetEnvironmentVariable("Monitoring:Prod:BackendAddress");
+            string prodBackendAppUri = GetEnvironmentVariable("Monitoring:Prod:BackendAppIdUri");
+
+            BackendSystemStatusesConnector prodConnector = (new LightMonitoringServerConnector(clientId, appKey, prodBackendAddress, prodBackendAppUri)).SystemStatusesConnector;
+
+            await DoCheckAsync(logger, prodConnector);
+        }
+
+        private static async Task DoCheckAsync(TraceWriter logger, BackendSystemStatusesConnector prodConnector)
+        {
             CancellationTokenSource cts = new CancellationTokenSource();
             cts.CancelAfter(TimeSpan.FromSeconds(30));
 
-            List<SystemStatus> systems = await connector.GetAll(cts.Token);
+            List<SystemStatus> systems = await prodConnector.GetAll(cts.Token);
 
             if (!systems.IsNullOrEmpty())
             {
@@ -126,7 +153,7 @@ namespace SystemsStatusCheckerConsoleApp.CheckSystemsStatus
                         CancellationTokenSource cts2 = new CancellationTokenSource();
                         cts2.CancelAfter(TimeSpan.FromSeconds(10));
 
-                        await connector.AddOrUpdate(system, cts2.Token);
+                        await prodConnector.AddOrUpdate(system, cts2.Token);
                     }
                 }
             }
@@ -136,9 +163,7 @@ namespace SystemsStatusCheckerConsoleApp.CheckSystemsStatus
 
         private static string GetEnvironmentVariable(string name)
         {
-            // Override this in run.csx file
-            return ConfigurationManager.AppSettings[name];
-            //return Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Process);
+            return Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Process);
         }
     }
 }
